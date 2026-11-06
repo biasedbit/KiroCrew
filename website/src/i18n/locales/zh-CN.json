@@ -5788,6 +5788,18 @@
     "viewPr": "拉取请求"
   },
   "components": {
+    "codeEditor": {
+      "comment_on_section": "评论此部分",
+      "cut": "剪切",
+      "copy": "复制",
+      "paste": "粘贴",
+      "select_all": "全选",
+      "undo": "撤销",
+      "redo": "重做",
+      "submit_saves_changes": "提交时会保存未保存的更改",
+      "file_changed_on_disk": "你开始编辑后，磁盘上的文件已更改。请先保存或放弃你的修改，然后再提交。",
+      "paste_refused": "浏览器阻止了对剪贴板的访问。请按 {{shortcut}} 粘贴。"
+    },
     "dataHomeOwnerNotice": {
       "cause": "{{productName}} 可能曾经以 root 身份启动过一次，比如用了 sudo。请不要再以 root 身份运行它，然后把这些文件还给你自己的账户。",
       "check_failed": "无法检查 {{productName}} 文件归谁所有。",

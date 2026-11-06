@@ -4373,6 +4373,18 @@
     }
   },
   "components": {
+    "codeEditor": {
+      "comment_on_section": "Comment on this section",
+      "cut": "Cut",
+      "copy": "Copy",
+      "paste": "Paste",
+      "select_all": "Select all",
+      "undo": "Undo",
+      "redo": "Redo",
+      "submit_saves_changes": "Submitting will save your unsaved changes",
+      "file_changed_on_disk": "The file changed on disk after you started editing. Save or discard your edits, then submit.",
+      "paste_refused": "The browser blocked clipboard access. Press {{shortcut}} to paste."
+    },
     "dataHomeOwnerNotice": {
       "cause": "{{productName}} was probably started as root once, for example with sudo. Stop running it as root, then give the files back to your own account.",
       "check_failed": "Couldn't check who owns the {{productName}} files.",

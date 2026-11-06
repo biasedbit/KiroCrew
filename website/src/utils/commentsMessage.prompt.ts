@@ -90,6 +90,12 @@ export function formatCommentsMessage(
       return
     }
     const anchor = c.anchor.length > 80 ? sliceCodePoints(c.anchor, 0, 80) + '…' : c.anchor
+    // A comment on a multi-line section of a code file names the whole range;
+    // the anchor is the section's text, so no extra snippet is needed.
+    if (c.line != null && c.endLine != null && c.endLine > c.line) {
+      lines.push(`${i + 1}. (lines ${c.line}-${c.endLine}, "${esc(anchor)}"): "${esc(c.text)}"`)
+      return
+    }
     const loc = c.line != null ? (c.column != null ? `line ${c.line}, col ${c.column}, ` : `line ${c.line}, `) : ''
     let ctx = ''
     if (srcLines && c.line != null && c.column != null && c.line >= 1 && c.line <= srcLines.length) {

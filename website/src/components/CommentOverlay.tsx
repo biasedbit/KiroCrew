@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { MessageSquare, MessageSquarePlus, X, Pencil, Check, Send } from 'lucide-react'
+import { MessageSquare, MessageSquarePlus, X, Pencil, Check, Send, TriangleAlert } from 'lucide-react'
 import { SendBtn } from './ui'
 import { offlineProps } from '../utils/offline'
 import { useImeGuard } from '../hooks/useImeGuard'
@@ -16,6 +16,9 @@ export interface InlineComment {
   text: string
   /** 1-based line number where the anchor starts in the source content, if resolved. */
   line?: number
+  /** For a comment on a multi-line section of a code file: the 1-based last
+   *  line of the section (inclusive). `anchor` is then the section's text. */
+  endLine?: number
   /** 1-based column of the first char of the anchor on its source line. */
   column?: number
   /** Character offset of the anchor in the rendered text (textContent space). Used to disambiguate repeated occurrences of the same anchor text. */
@@ -163,8 +166,10 @@ export function instructionDraftKeyFor(tabKey: string | undefined, filePath: str
   return tabKey ? `local:${tabKey}:${filePath}` : undefined
 }
 
-function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPrompt, connected = true, onEditingChange, draftKey }: {
-  comments: InlineComment[]; onEdit: (id: string, text: string) => void; onRemove: (id: string) => void; onSubmitAll: (extraPrompt?: string) => void; enableExtraPrompt?: boolean
+function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPrompt, connected = true, onEditingChange, draftKey, submitNote }: {
+  comments: InlineComment[]; onEdit: (id: string, text: string) => void; onRemove: (id: string) => void
+  /** Resolving false means nothing was sent: the typed instruction stays. */
+  onSubmitAll: (extraPrompt?: string) => void | Promise<void | boolean>; enableExtraPrompt?: boolean
   /** Keeps the typed instruction across an unmount (the panel withholding the
    *  tab for a moment, say), keyed by the document it belongs to. */
   draftKey?: string
@@ -174,6 +179,9 @@ function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPromp
    *  submit can't fire (and clear pending comments) while the send path would
    *  silently refuse it. Defaults true for non-chat embeddings. */
   connected?: boolean
+  /** A short warning beside Submit All about what pressing it also does (a
+   *  code editor with unsaved changes saves them first). Absent, nothing is shown. */
+  submitNote?: string
 }) {
   const kept = draftKey !== undefined ? extraPromptDrafts.get(draftKey) : undefined
   const [extraPrompt, setExtraPrompt] = useState(kept?.text ?? '')
@@ -217,7 +225,16 @@ function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPromp
             ><MessageSquarePlus className="lucide-inline" /> {i18nT('components.commentOverlay.add_instruction')}</button>
           )}
         </div>
-        <SendBtn disabled={!connected} {...offlineProps(connected, i18nT('utils.offline.submit_comments'), i18nT('components.commentOverlay.submit_all'))} onClick={() => { onSubmitAll(enableExtraPrompt && showExtraPrompt ? extraPrompt : undefined); setExtraPrompt(''); setShowExtraPrompt(false) }}>{i18nT('components.commentOverlay.submit_all')} <Send className="lucide-inline" /></SendBtn>
+        <div className="flex items-center gap-2">
+        {submitNote && <span role="status" className="inline-flex items-center gap-1 text-[11px] text-warn" data-testid="submit-note"><TriangleAlert size={12} aria-hidden="true" />{submitNote}</span>}
+        <SendBtn disabled={!connected} {...offlineProps(connected, i18nT('utils.offline.submit_comments'), i18nT('components.commentOverlay.submit_all'))} onClick={() => {
+          const clear = () => { setExtraPrompt(''); setShowExtraPrompt(false) }
+          const sent = onSubmitAll(enableExtraPrompt && showExtraPrompt ? extraPrompt : undefined)
+          // A host that may refuse (a save that failed) answers with a promise.
+          if (sent instanceof Promise) void sent.then(ok => { if (ok !== false) clear() })
+          else clear()
+        }}>{i18nT('components.commentOverlay.submit_all')} <Send className="lucide-inline" /></SendBtn>
+        </div>
       </div>
       <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
         {comments.map((c, i) => <CommentRow key={c.id} comment={c} number={i + 1} onEdit={onEdit} onRemove={onRemove} onEditingChange={onEditingChange} draftKey={draftKey} />)}

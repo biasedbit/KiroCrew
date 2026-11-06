@@ -13,6 +13,8 @@ import { formatCommentsMessage, instructionDraftKeyFor, type InlineComment } fro
 import { useImageBoxDraft, useImageBoxHost } from './useImageBoxComments'
 import { ImageCommentCtx, popoverBesideBox, type PlainRect } from '../utils/imageComments'
 import SelectionToolbar, { type SelectionAction, type SelectionComposer } from './SelectionToolbar'
+import type { EditorCommenting } from './CodeEditor'
+import { mapCommentsThroughEdits, relocateCommentsByText } from '../utils/codeCommentRanges'
 import MarkdownOutlineRail from './MarkdownToc'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 import { useDiffSplit } from '../hooks/useDiffSplit'
@@ -327,7 +329,12 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // while the DOM selection was still live (focus in the input collapses it).
   // A ref, not state: it is read only by the submit handler, and nothing renders
   // from it.
-  const pendingAnchorRef = useRef<{ anchor: string; line?: number; column?: number; startOffset?: number; renderedQuote?: string; inCode?: boolean; codePosition?: number } | null>(null)
+  const pendingAnchorRef = useRef<{ anchor: string; line?: number; endLine?: number; column?: number; startOffset?: number; renderedQuote?: string; inCode?: boolean; codePosition?: number } | null>(null)
+  // A code file in the editor: the section "Comment on this section" was
+  // chosen for, staged until the composer opens over it (see `editorCommenting`).
+  const stagedSectionRef = useRef<{ startLine: number; startColumn: number; endLine: number; quote: string } | null>(null)
+  const [editorCommentSelection, setEditorCommentSelection] = useState<{ text: string; x: number; y: number; start?: number } | null>(null)
+  const [activeEditorCommentId, setActiveEditorCommentId] = useState<string | null>(null)
   // Whether the annotation box is open — read by the panel's document-level
   // Escape handler so it yields the key to the box instead of closing the panel.
   const composerOpenRef = useRef(false)
@@ -435,7 +442,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     diskReadAbortRef, readFromDisk, setMissingOnDisk, partialCopy, partialCopyRef, bufferIsLastCopy,
     lastCopy, downloadLastCopy, lastCopyCopied, copyLastCopy, evictFileRead, applyDiskRead, catchUpRef, adoptDisk,
     diskTickRef, diffStartTickRef, patchOwedTick,
-  } = useMarkdownPanelDisk({ filePath, content, binary, partial, placeholder, liveWatch, editing, dirty, dirtyRef, active, qc, onDiskContent, onContentChange, reportActionError })
+  } = useMarkdownPanelDisk({ filePath, content, binary, partial, placeholder, liveWatch, editing, followDiskWhileEditing: !MD_EXTS.has(extOf(filePath)) && !RICH_FILE_TYPES.includes(detectFileType(filePath)) && !readOnly && !!onSubmitComments && !diffMode, dirty, dirtyRef, active, qc, onDiskContent, onContentChange, reportActionError })
   useEffect(() => { onLastCopyChange?.(lastCopy) }, [lastCopy, onLastCopyChange])
 
 
@@ -653,6 +660,17 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
 
   const handleComposerOpen = useCallback((text: string) => {
     composerOpenRef.current = true
+    // Opened from the editor's right-click menu: the anchor is the section the
+    // editor reported, not a DOM selection (the editor's rows are in shadow DOM).
+    const staged = stagedSectionRef.current
+    if (staged && staged.quote === text) {
+      clearHighlightMarks()
+      pendingAnchorRef.current = {
+        anchor: staged.quote, line: staged.startLine, column: staged.startColumn,
+        ...(staged.endLine > staged.startLine ? { endLine: staged.endLine } : {}),
+      }
+      return
+    }
     const info = resolveSelectionCoords(text)
     if (info) {
       if (info.range) applyHighlightMarks(info.range)
@@ -669,6 +687,8 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     composerOpenRef.current = false
     composerDraftRef.current = false
     pendingAnchorRef.current = null
+    stagedSectionRef.current = null
+    setEditorCommentSelection(null)
     clearHighlightMarks()
   }, [clearHighlightMarks])
 
@@ -684,11 +704,13 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
 
   const handleComposerSubmit = useCallback((comment: string, text: string) => {
     const info = pendingAnchorRef.current ?? { anchor: text }
-    const newComment: InlineComment = { id: Math.random().toString(36).substring(2), anchor: info.anchor, text: comment, line: info.line, column: info.column, startOffset: info.startOffset, ...(info.renderedQuote ? { renderedQuote: info.renderedQuote } : {}), inCode: info.inCode, codePosition: info.codePosition }
+    const newComment: InlineComment = { id: Math.random().toString(36).substring(2), anchor: info.anchor, text: comment, line: info.line, ...(info.endLine != null ? { endLine: info.endLine } : {}), column: info.column, startOffset: info.startOffset, ...(info.renderedQuote ? { renderedQuote: info.renderedQuote } : {}), inCode: info.inCode, codePosition: info.codePosition }
     setComments(prev => [...prev, newComment])
     composerOpenRef.current = false
     composerDraftRef.current = false
     pendingAnchorRef.current = null
+    stagedSectionRef.current = null
+    setEditorCommentSelection(null)
     clearHighlightMarks()
   }, [clearHighlightMarks])
 
@@ -714,6 +736,41 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     draftStore: composerDraftStore,
   } : undefined, [onSubmitComments, handleComposerOpen, handleComposerSubmit, handleComposerClose, handleComposerDraftChange, confirmDiscardDraft, composerDraftStore])
 
+  // Comments in the code editor: chips under each pending comment's last line,
+  // "Comment on this section" in the right-click menu, and line numbers that
+  // follow the editor's edits. Not in the live-diff editor, which takes no chips.
+  const canCommentInEditor = !isMarkdown && !isRichType && !readOnly && !!onSubmitComments && !diffMode
+  // A new version of the file that did not come from typing (the agent's edit,
+  // reloaded from disk) carries no edit list: each pending comment is found
+  // again by its text, or loses its location if the text is gone.
+  const typedContentRef = useRef<string | null>(null)
+  const lastContentRef = useRef({ path: filePath, content })
+  useEffect(() => {
+    const last = lastContentRef.current
+    lastContentRef.current = { path: filePath, content }
+    if (!canCommentInEditor || last.path !== filePath || last.content === content || typedContentRef.current === content) return
+    setComments(prev => relocateCommentsByText(prev, last.content, content))
+  }, [content, filePath, canCommentInEditor])
+  const editorCommenting: EditorCommenting | undefined = useMemo(() => {
+    if (!canCommentInEditor || !editing) return undefined
+    return {
+      annotations: comments.filter(c => c.line != null && !c.image).map(c => ({ id: c.id, line: c.endLine ?? c.line!, count: 1, unread: false })),
+      activeId: activeEditorCommentId,
+      onActivate: setActiveEditorCommentId,
+      onComment: (section, x, y) => {
+        stagedSectionRef.current = { startLine: section.startLine, startColumn: section.startColumn, endLine: section.endLine, quote: section.text }
+        // `start` keys the composer's draft slot, as a text offset would.
+        const start = content.split('\n').slice(0, section.startLine - 1).reduce((n, l) => n + l.length + 1, 0) + section.startColumn - 1
+        setEditorCommentSelection({ text: section.text, x, y, start })
+      },
+      // Both ends of every section move through the edit, so a section keeps
+      // naming exactly its text however the user edits around or inside it.
+      onEdits: (before, after, changes) => {
+        setComments(prev => mapCommentsThroughEdits(prev, before, after, changes))
+      },
+    }
+  }, [canCommentInEditor, editing, comments, activeEditorCommentId, content])
+
   const removeComment = useCallback((id: string) => {
     setComments(prev => prev.filter(c => c.id !== id))
   }, [])
@@ -738,8 +795,29 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     if (editing) editingIdsRef.current.add(id)
     else editingIdsRef.current.delete(id)
   }, [])
-  const submitAllComments = useCallback((extraPrompt?: string) => {
+  const submitAllComments = useCallback(async (extraPrompt?: string) => {
     if (!connected || !onSubmitComments || comments.length === 0 || submitInFlightRef.current) return
+    // In the code editor, Submit All saves unsaved edits first, so the lines
+    // the comments name are the lines the agent reads on disk. A failed save
+    // sends nothing; the save error shows where it always does.
+    if (editorCommenting && dirtyRef.current) {
+      submitInFlightRef.current = true
+      let saved = false
+      try {
+        // The disk is the agent's file too: an edit it made after this buffer
+        // was loaded is not written over as a side effect of sending feedback.
+        if (savedBaseline != null) {
+          const disk = await readFromDisk()
+          if (disk.kind === 'ok' && disk.text !== savedBaseline) {
+            setSaveError(i18nT('components.codeEditor.file_changed_on_disk'))
+            return false
+          }
+        }
+        saved = await handleSaveRef.current()
+      } finally { submitInFlightRef.current = false }
+      // `dirtyRef` trails the save by a render, so the save's own answer decides.
+      if (!saved) return false
+    }
     const sentFile = filePath
     const sent = new Map(comments.map(c => [c.id, c]))
     const unchanged = (c: InlineComment) => {
@@ -764,7 +842,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       })
       .catch(() => { /* undelivered — keep the batch pending */ })
       .finally(() => { submitInFlightRef.current = false })
-  }, [connected, onSubmitComments, comments, filePath, content])
+  }, [connected, onSubmitComments, comments, filePath, content, editorCommenting, savedBaseline, readFromDisk])
 
   useEffect(() => {
     if (editing) { pendingAnchorRef.current = null; clearHighlightMarks(); window.getSelection()?.removeAllRanges() }
@@ -1044,9 +1122,10 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
    *  catch-up latch left `due` by the first edit, the clean flip would start a
    *  read that puts the just-written text back over it. */
   const editGenRef = useRef(0)
-  const handleSave = useCallback(async () => {
+  // Resolves true when the buffer is on disk and nothing was typed since.
+  const handleSave = useCallback(async (): Promise<boolean> => {
     // Every path to a save (button, Cmd+S, Snapshot) lands here.
-    if (partial) { setSaveError(i18nT('components.markdownPanel.partial_copy_cannot_save', { reason: partialReason(partial) })); return }
+    if (partial) { setSaveError(i18nT('components.markdownPanel.partial_copy_cannot_save', { reason: partialReason(partial) })); return false }
     setSaving(true); setSaveError(null)
     const editGen = editGenRef.current
     try {
@@ -1057,10 +1136,12 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       // consumer opening the path inside the window refetches. The post-save
       // catch-up read is a fresh fetch either way (see readFromDisk).
       evictFileRead()
-      if (editGenRef.current === editGen) setDirty(false)
+      const current = editGenRef.current === editGen
+      if (current) setDirty(false)
       qc.invalidateQueries({ queryKey: ['file-diff', filePath] })
+      return current
     }
-    catch (err) { setSaveError(err instanceof Error ? err.message : i18nT('components.markdownPanel.save_failed')) }
+    catch (err) { setSaveError(err instanceof Error ? err.message : i18nT('components.markdownPanel.save_failed')); return false }
     finally { setSaving(false) }
   }, [filePath, content, partial, onSave, qc, evictFileRead])
 
@@ -1272,6 +1353,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // is Cancel's, and Cancel means match the disk. Synchronous with the edit,
   // before the buffer moves, so no landing can slip between the two.
   const handleChange = useCallback((v: string) => {
+    typedContentRef.current = v
     editGenRef.current++
     if (!dirtyRef.current) { diskReadAbortRef.current?.abort(); catchUpRef.current = 'due' }
     onContentChange(v); setDirty(true)
@@ -1466,7 +1548,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             )}
             {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ImageCommentCtx.Provider value={imageCommentHost}><ContentRenderer flush isRichType={isRichType} richSource={canEditRich && editing} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
               diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged} onLiveDiffDegraded={reportLiveDiffDegraded}
-              previewRef={previewRef} displayContent={displayContent} isMarkdown={isMarkdown} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} markdownClassName="msg-content text-sm leading-relaxed" editorRef={setRevealEditor} /></ImageCommentCtx.Provider>}
+              previewRef={previewRef} displayContent={displayContent} isMarkdown={isMarkdown} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} markdownClassName="msg-content text-sm leading-relaxed" editorRef={setRevealEditor} editorCommenting={editorCommenting} /></ImageCommentCtx.Provider>}
           </div>
           {isMarkdown && !editing && <MarkdownOutlineRail containerRef={sidePanelScrollRef} />}
         </div>}
@@ -1486,11 +1568,13 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           Text selected in a code block is anchored by the preview only: the diff
           view has no preview root for `resolveSelectionCoords` to read. */}
       {!fullscreen && !editing && <SelectionToolbar key={filePath} containerRef={sidePanelScrollRef} actions={selectionActions} composer={selectionComposer} suspended={!active} codeSelection={!diffViewShown} />}
+      {/* In the code editor the composer opens only from the right-click menu. */}
+      {!fullscreen && editing && editorCommenting && <SelectionToolbar key={`edit:${filePath}`} containerRef={sidePanelScrollRef} actions={selectionActions} composer={selectionComposer} suspended={!active} externalOnly externalSelection={editorCommentSelection} />}
       {/* Portaled like the selection toolbar, into the pane's overlay root: the
           composer is viewport-fixed where the drag ended, so no ancestor transform
           may re-base it, and a Crew switch hides it with the pane. */}
       {!fullscreen && imageCommentPopover && <OverlayPortal>{imageCommentPopover}</OverlayPortal>}
-      {!fullscreen && <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} onEditingChange={trackRowEditing} draftKey={instructionDraftKey} />}
+      {!fullscreen && <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} onEditingChange={trackRowEditing} draftKey={instructionDraftKey} submitNote={editorCommenting && dirty ? i18nT('components.codeEditor.submit_saves_changes') : undefined} />}
     </DetailPanel>
     {fullscreen && <OverlayPortal>{
       // The onKeyDown here implements a focus trap for the modal dialog; a
@@ -1563,14 +1647,15 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             {!showBinaryCard && !zeroDiff && !diffUnavailable && !(diffChecking && diffData == null) && canTextDiff && <DiffViewBlock sideBySide={diffSplit} diffMode={diffViewShown} fileName={fileName} originalContent={originalContent} content={comparedContent} gitPatch={gitPatch} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} autoLineByLine={active} />}
             {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ImageCommentCtx.Provider value={imageCommentHost}><ContentRenderer isRichType={isRichType} richSource={canEditRich && editing} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
               diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged} onLiveDiffDegraded={reportLiveDiffDegraded}
-              previewRef={fullscreenPreviewRef} displayContent={displayContent} isMarkdown={isMarkdown} onFileOpen={fullscreenFileOpen} onFolderOpen={fullscreenFolderOpen} previewStyle={mdPreviewStyle} editorRef={setRevealEditor} /></ImageCommentCtx.Provider>}
+              previewRef={fullscreenPreviewRef} displayContent={displayContent} isMarkdown={isMarkdown} onFileOpen={fullscreenFileOpen} onFolderOpen={fullscreenFolderOpen} previewStyle={mdPreviewStyle} editorRef={setRevealEditor} editorCommenting={editorCommenting} /></ImageCommentCtx.Provider>}
           </div>
           {isMarkdown && !editing && <MarkdownOutlineRail containerRef={fullscreenBodyRef} />}
         </div>
         {!editing && <SelectionToolbar key={filePath} containerRef={fullscreenBodyRef} actions={selectionActions} composer={selectionComposer} suspended={!active} codeSelection={!diffViewShown} />}
+        {editing && editorCommenting && <SelectionToolbar key={`edit:${filePath}`} containerRef={fullscreenBodyRef} actions={selectionActions} composer={selectionComposer} suspended={!active} externalOnly externalSelection={editorCommentSelection} />}
         {/* Inside the dialog, so its focus trap and stacking context cover it. */}
         {imageCommentPopover}
-        <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} onEditingChange={trackRowEditing} draftKey={instructionDraftKey} />
+        <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} onEditingChange={trackRowEditing} draftKey={instructionDraftKey} submitNote={editorCommenting && dirty ? i18nT('components.codeEditor.submit_saves_changes') : undefined} />
         {/* Footer */}
         <Clickable className="shrink-0 flex items-center px-3 h-6 text-[11px] text-muted font-mono truncate cursor-pointer hover:text-text transition-colors" title={i18nT('components.markdownPanel.click_to_copy_path')} onClick={() => copyToClipboard(filePath)}>{filePath}</Clickable>
       </div>

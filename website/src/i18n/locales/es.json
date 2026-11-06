@@ -6124,6 +6124,18 @@
     "viewPr": "Solicitud"
   },
   "components": {
+    "codeEditor": {
+      "comment_on_section": "Comentar esta sección",
+      "cut": "Cortar",
+      "copy": "Copiar",
+      "paste": "Pegar",
+      "select_all": "Seleccionar todo",
+      "undo": "Deshacer",
+      "redo": "Rehacer",
+      "submit_saves_changes": "Al enviar se guardarán los cambios sin guardar",
+      "file_changed_on_disk": "El archivo cambió en el disco después de que empezaste a editar. Guarda o descarta tus cambios y luego envía.",
+      "paste_refused": "El navegador bloqueó el acceso al portapapeles. Pulsa {{shortcut}} para pegar."
+    },
     "dataHomeOwnerNotice": {
       "cause": "Es probable que {{productName}} se iniciara una vez como root, por ejemplo con sudo. Deja de ejecutarlo como root y luego devuelve los archivos a tu propia cuenta.",
       "check_failed": "No se pudo comprobar a quién pertenecen los archivos de {{productName}}.",

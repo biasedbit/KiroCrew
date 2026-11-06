@@ -16,7 +16,7 @@ import { Suspense, createContext, forwardRef, lazy, memo, type CSSProperties, us
 import type { BaseCodeOptions, FileContents, LineAnnotation, SelectedLineRange } from '@pierre/diffs'
 import type { FileOptions } from '@pierre/diffs/react'
 import type { PierreDiffOptions } from './config'
-import type { EditorMarker, PierreEditorHandle } from './PierreEditorImpl'
+import type { EditorMarker, EditorSelectionInfo, PierreEditorHandle } from './PierreEditorImpl'
 import { PlainCodeFallback, PlainFilePairFallback, PlainFilePairHeader } from './PlainCodeFallback'
 import { isPierreFilePairWithinBudget } from './renderBudget'
 import { computePairPatch } from './diffOffThread'
@@ -42,7 +42,7 @@ interface PairIdentity {
   newFile: FileContents | null
 }
 
-export type { EditorMarker, PierreEditorHandle }
+export type { EditorMarker, EditorSelectionInfo, PierreEditorHandle }
 
 /** A one-shot line-reveal request: `nonce` distinguishes repeat clicks on the
  *  same `file.py:447` chip, which would otherwise be `===` and re-fire nothing. */
@@ -76,6 +76,12 @@ export const PierreEditor = memo(forwardRef<PierreEditorHandle, {
    *  over the inline budget (see `PierreEditorImpl`). */
   onLiveDiffDegraded?: (degraded: boolean) => void
   className?: string
+  /** Rows pinned under lines of the plain editor; see `PierreEditorImpl`. */
+  lineAnnotations?: LineAnnotation<unknown>[]
+  renderAnnotation?: (annotation: LineAnnotation<unknown>) => React.ReactNode
+  onLineAnnotationsChange?: (annotations: LineAnnotation<unknown>[]) => void
+  /** Each edit as text replacements; see `PierreEditorImpl`. */
+  onEdits?: (before: string, after: string, changes: { start: number; end: number; text: string }[]) => void
 }>(function PierreEditor(props, ref) {
   // The lazy views below render translated notices; repaint them on a language switch.
   useLanguageGeneration()

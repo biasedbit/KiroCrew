@@ -44,9 +44,14 @@ export const MISSING_FILE_RETRY_MS = 1_000
  *  30 s, not every second, until the tab is hidden or the file is back. */
 export const MISSING_FILE_RETRY_MAX_MS = 30_000
 
-export function useMarkdownPanelDisk({ filePath, content, binary, partial, placeholder, liveWatch, editing, dirty, dirtyRef, active, qc, onDiskContent, onContentChange, reportActionError }: {
+export function useMarkdownPanelDisk({ filePath, content, binary, partial, placeholder, liveWatch, editing, followDiskWhileEditing = false, dirty, dirtyRef, active, qc, onDiskContent, onContentChange, reportActionError }: {
   filePath: string; content: string; binary?: boolean; partial?: PartialCause | false; placeholder?: boolean; liveWatch?: boolean
   editing: boolean; dirty: boolean; dirtyRef: MutableRefObject<boolean>; active: boolean; qc: QueryClient
+  /** Keep the watch armed in the editor while the buffer is clean. For a code
+   *  file that takes comments: the agent edits the file the comments were sent
+   *  about, and a stale clean buffer would be written back over its edits by the
+   *  next save (Submit All saves). */
+  followDiskWhileEditing?: boolean
   onDiskContent?: (c: string, binary?: boolean, partial?: PartialCause | false) => void
   onContentChange: (c: string) => void
   reportActionError: ReportError
@@ -316,7 +321,7 @@ export function useMarkdownPanelDisk({ filePath, content, binary, partial, place
   // `useFileWatch` closes such a stream for good, so a watch armed while the
   // file was gone would never see it recreated. The retry below covers that
   // stretch, and the read that finds the file again arms the stream afresh.
-  const watchArmable = !!liveWatch && !editing && !dirty && !missingOnDisk
+  const watchArmable = !!liveWatch && (!editing || followDiskWhileEditing) && !dirty && !missingOnDisk
   const onWatchFrame = useCallback(
     // The event's own `content` is never APPLIED. `/api/file-watch` decodes
     // with `errors="replace"` and carries no binary verdict, so a file replaced

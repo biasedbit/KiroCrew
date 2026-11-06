@@ -6124,6 +6124,18 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "codeEditor": {
+      "comment_on_section": "Commenter cette section",
+      "cut": "Couper",
+      "copy": "Copier",
+      "paste": "Coller",
+      "select_all": "Tout sélectionner",
+      "undo": "Annuler",
+      "redo": "Rétablir",
+      "submit_saves_changes": "L’envoi enregistrera vos modifications non enregistrées",
+      "file_changed_on_disk": "Le fichier a changé sur le disque depuis le début de vos modifications. Enregistrez-les ou abandonnez-les, puis envoyez.",
+      "paste_refused": "Le navigateur a bloqué l'accès au presse-papiers. Appuyez sur {{shortcut}} pour coller."
+    },
     "dataHomeOwnerNotice": {
       "cause": "{{productName}} a sans doute été lancé une fois en tant que root, par exemple avec sudo. Arrête de le lancer en tant que root, puis rends les fichiers à ton propre compte.",
       "check_failed": "Impossible de vérifier à qui appartiennent les fichiers de {{productName}}.",

@@ -6124,6 +6124,18 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "codeEditor": {
+      "comment_on_section": "Commenta questa sezione",
+      "cut": "Taglia",
+      "copy": "Copia",
+      "paste": "Incolla",
+      "select_all": "Seleziona tutto",
+      "undo": "Annulla",
+      "redo": "Ripeti",
+      "submit_saves_changes": "L’invio salverà le modifiche non salvate",
+      "file_changed_on_disk": "Il file è cambiato sul disco dopo che hai iniziato a modificarlo. Salva o annulla le modifiche, poi invia.",
+      "paste_refused": "Il browser ha bloccato l'accesso agli appunti. Premi {{shortcut}} per incollare."
+    },
     "dataHomeOwnerNotice": {
       "cause": "Probabilmente {{productName}} è stato avviato una volta come root, per esempio con sudo. Smetti di eseguirlo come root, poi restituisci i file al tuo account.",
       "check_failed": "Impossibile controllare a chi appartengono i file di {{productName}}.",

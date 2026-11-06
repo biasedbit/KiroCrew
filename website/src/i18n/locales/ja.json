@@ -5788,6 +5788,18 @@
     "viewPr": "プルリクエスト"
   },
   "components": {
+    "codeEditor": {
+      "comment_on_section": "このセクションにコメント",
+      "cut": "切り取り",
+      "copy": "コピー",
+      "paste": "貼り付け",
+      "select_all": "すべて選択",
+      "undo": "元に戻す",
+      "redo": "やり直し",
+      "submit_saves_changes": "送信すると未保存の変更が保存されます",
+      "file_changed_on_disk": "編集を始めた後にディスク上のファイルが変更されました。変更を保存するか破棄してから送信してください。",
+      "paste_refused": "ブラウザーがクリップボードへのアクセスをブロックしました。貼り付けるには {{shortcut}} を押してください。"
+    },
     "dataHomeOwnerNotice": {
       "cause": "{{productName}} が一度 root として起動された可能性があります（たとえば sudo で）。root での実行をやめてから、ファイルを自分のアカウントに戻してください。",
       "check_failed": "{{productName}} のファイルの所有者を確認できませんでした。",

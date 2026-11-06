@@ -17,7 +17,7 @@ import { memo, useMemo } from 'react'
 import MarkdownRenderer, { BasePathCtx } from './MarkdownRenderer'
 import { ImageViewer, CsvViewer, JsonViewer, JsonlViewer, HtmlViewer, PdfViewer, OfficeViewer, SheetViewer, SvgViewer, ExcalidrawViewer, MediaPlayer } from './FileRenderers'
 import { PierreCode, type PierreEditorHandle } from '../pierre'
-import { CodeEditor } from './CodeEditor'
+import { CodeEditor, type EditorCommenting } from './CodeEditor'
 
 export { CodeEditor } from './CodeEditor'
 
@@ -65,7 +65,7 @@ export const ContentRenderer = memo(function ContentRenderer({
   lang, lineNums, wordWrap, onChange, onSave,
   previewRef, displayContent, isMarkdown,
   markdownClassName, previewStyle, flush, editorRef, diffBase, diffSplit, diffExpandUnchanged, onLiveDiffDegraded,
-  onFileOpen, onFolderOpen,
+  onFileOpen, onFolderOpen, editorCommenting,
 }: {
   isRichType: boolean
   /** A text-backed rich type (json, csv, ...) shown as its source: the code
@@ -107,6 +107,9 @@ export const ContentRenderer = memo(function ContentRenderer({
   /** Live-diff editing only: whether the code editor dropped its live diff
    *  for being over the inline budget (see `PierreEditorImpl`). */
   onLiveDiffDegraded?: (degraded: boolean) => void
+  /** Comments in the code editor (chips and the right-click menu's comment
+   *  item). Absent, the editor's menu has only the edit actions. */
+  editorCommenting?: EditorCommenting
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const codeFile = useMemo(
@@ -202,6 +205,7 @@ export const ContentRenderer = memo(function ContentRenderer({
           diffSplit={diffSplit}
           diffExpandUnchanged={diffExpandUnchanged}
           onLiveDiffDegraded={onLiveDiffDegraded}
+          commenting={richSource ? undefined : editorCommenting}
         />
       )}
       {!isRichType && !editing && isMarkdown && (

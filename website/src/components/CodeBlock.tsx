@@ -141,7 +141,7 @@ const chipBaseStyle: React.CSSProperties = {
 /** A code thread's count chip. It registers itself as the thread's live
  *  anchor, so the popover tracks it on scroll and can find it from the
  *  sidebar (it sits in Pierre's shadow DOM, out of `querySelector`'s reach). */
-function ThreadChip(
+export function ThreadChip(
   { meta, active, onActivate }: { meta: CodeLineAnnotationMeta; active: boolean; onActivate: (id: string) => void },
 ) {
   // Filled while unread or selected (the page's active thread, which stays

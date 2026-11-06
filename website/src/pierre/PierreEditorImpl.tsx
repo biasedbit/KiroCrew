@@ -4,7 +4,7 @@
  * the same lazy chunk; reach it through `../pierre` only.
  */
 import { forwardRef, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { BaseCodeOptions, FileContents } from '@pierre/diffs'
+import type { BaseCodeOptions, FileContents, LineAnnotation } from '@pierre/diffs'
 import { EditProvider, File, MultiFileDiff, Virtualizer } from '@pierre/diffs/react'
 import { Editor, type EditorOptions } from '@pierre/diffs/edit'
 import { useIsDark } from '../hooks/useIsDark'
@@ -32,6 +32,34 @@ export interface PierreEditorHandle {
    *  rather than only its first. */
   jumpToLine: (line: number, endLine?: number) => void
   focus: () => void
+  /** The primary selection, 1-based, with its text; a caret has empty `text`.
+   *  Returns null before Pierre binds its editor. */
+  getSelection: () => EditorSelectionInfo | null
+  /** Replaces the primary selection with `text` (an insert at a caret), as one
+   *  undoable edit. Does nothing before Pierre binds its editor. */
+  replaceSelection: (text: string) => void
+  selectAll: () => void
+  undo: () => void
+  redo: () => void
+}
+
+/** A selection in the editor, in 1-based lines and columns. */
+export interface EditorSelectionInfo {
+  startLine: number
+  startColumn: number
+  endLine: number
+  endColumn: number
+  text: string
+}
+
+/** The text between two 0-based positions of `contents`. */
+function textBetween(contents: string, start: { line: number; character: number }, end: { line: number; character: number }): string {
+  const lines = contents.split('\n')
+  if (start.line === end.line) return (lines[start.line] ?? '').slice(start.character, end.character)
+  const parts = [(lines[start.line] ?? '').slice(start.character)]
+  for (let l = start.line + 1; l < end.line; l++) parts.push(lines[l] ?? '')
+  parts.push((lines[end.line] ?? '').slice(0, end.character))
+  return parts.join('\n')
 }
 
 function createEditor<LAnnotation>(options: EditorOptions<LAnnotation>) {
@@ -49,7 +77,7 @@ function createEditor<LAnnotation>(options: EditorOptions<LAnnotation>) {
  *  than fighting it: `direction: 'none'` makes Pierre reveal the selection's
  *  START, which is the row already on screen, so the span highlights without the
  *  view jumping to its end. */
-function revealSpan(editor: Editor<undefined>, line: number, endLine?: number): void {
+function revealSpan(editor: Editor<unknown>, line: number, endLine?: number): void {
   editor.focus({ lineNumber: line })
   if (endLine === undefined || endLine <= line) return
   editor.setSelections([{
@@ -85,7 +113,7 @@ function dominantLineEnding(text: string): '\n' | '\r\n' | '\r' {
   return '\n'
 }
 
-function applyMarkers(editor: Editor<undefined>, markers: EditorMarker[] | undefined): void {
+function applyMarkers(editor: Editor<unknown>, markers: EditorMarker[] | undefined): void {
   if (markers == null) return
   editor.setMarkers(
     markers.map(marker => ({
@@ -122,7 +150,16 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
    *  changes; never in the plain editor, never on unmount. */
   onLiveDiffDegraded?: (degraded: boolean) => void
   className?: string
-}>(function PierreEditorImpl({ file, langHint, options, onChange, onSave, markers, onCursorChange, diffBase, diffSplit, diffExpandUnchanged, onLiveDiffDegraded, className }, ref) {
+  /** Rows pinned under lines of the plain editor (not the live diff). Pierre
+   *  moves them with each edit and reports the moved set through
+   *  `onLineAnnotationsChange`. */
+  lineAnnotations?: LineAnnotation<unknown>[]
+  renderAnnotation?: (annotation: LineAnnotation<unknown>) => React.ReactNode
+  onLineAnnotationsChange?: (annotations: LineAnnotation<unknown>[]) => void
+  /** Each edit as text replacements, in offsets into `before`, the text the
+   *  edit started from. */
+  onEdits?: (before: string, after: string, changes: { start: number; end: number; text: string }[]) => void
+}>(function PierreEditorImpl({ file, langHint, options, onChange, onSave, markers, onCursorChange, diffBase, diffSplit, diffExpandUnchanged, onLiveDiffDegraded, className, lineAnnotations, renderAnnotation, onLineAnnotationsChange, onEdits }, ref) {
   const lang = file.lang || (langHint ? fenceLanguage(langHint) : undefined)
   const dark = useIsDark()
   const themes = usePierreThemes()
@@ -292,7 +329,7 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
     if (!liveDiffRequested) return
     onLiveDiffDegradedRef.current?.(!renderLiveDiff)
   }, [liveDiffRequested, renderLiveDiff, baseFile])
-  const editorRef = useRef<Editor<undefined> | null>(null)
+  const editorRef = useRef<Editor<unknown> | null>(null)
   /** A jump requested before Pierre bound its editor, replayed on attach. */
   const pendingJumpRef = useRef<{ line: number; endLine?: number } | null>(null)
   const onChangeRef = useRef(onChange)
@@ -301,6 +338,10 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   onSaveRef.current = onSave
   const onCursorRef = useRef(onCursorChange)
   onCursorRef.current = onCursorChange
+  const onAnnotationsChangeRef = useRef(onLineAnnotationsChange)
+  onAnnotationsChangeRef.current = onLineAnnotationsChange
+  const onEditsRef = useRef(onEdits)
+  onEditsRef.current = onEdits
   const generationRef = useRef(poolState.generation)
   generationRef.current = poolState.generation
   const markersRef = useRef(markers)
@@ -323,7 +364,7 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
 
   // Editor identity is per-mounted-surface: the factory caches by options
   // object identity, so this memo must be stable for the component lifetime.
-  const editorOptions = useMemo<EditorOptions<undefined>>(
+  const editorOptions = useMemo<EditorOptions<unknown>>(
     () => ({
       onAttach(editor) {
         editorRef.current = editor
@@ -357,16 +398,25 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
           editor.focus()
         }
       },
-      onChange(changed) {
+      onChange(changed, movedAnnotations, event) {
         // `contents` is a getter that joins the whole document: read it once.
         const contents = changed.contents
+        const before = latestContentsRef.current
         latestContentsRef.current = contents
         // The editor reports the change before it re-renders, so the held
         // file carries the new text for every render this change triggers,
         // Pierre's own included.
         const session = sessionFileRef.current
         if (session !== null) session.contents = contents
+        if (event?.changes?.length) {
+          onEditsRef.current?.(before, contents, event.changes.map(ch => ({ start: ch.start, end: ch.end, text: ch.text })))
+        }
         onChangeRef.current(contents)
+        // The plain editor's annotations, shifted by this edit. The live diff
+        // reports side-tagged diff annotations, which no caller here uses.
+        if (movedAnnotations && !movedAnnotations.some(a => 'side' in a)) {
+          onAnnotationsChangeRef.current?.(movedAnnotations as LineAnnotation<unknown>[])
+        }
         reportCursor()
       },
     }),
@@ -404,7 +454,41 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
         return
       }
       revealSpan(editor, target, endLine)
-    },    focus: () => editorRef.current?.focus(),
+    },
+    focus: () => editorRef.current?.focus(),
+    getSelection: () => {
+      const editor = editorRef.current
+      const sel = editor?.getState()?.selections?.[0]
+      if (!editor || !sel) return null
+      // A backward selection still has start before end in document order.
+      const [a, b] = (sel.start.line < sel.end.line || (sel.start.line === sel.end.line && sel.start.character <= sel.end.character))
+        ? [sel.start, sel.end] : [sel.end, sel.start]
+      return {
+        startLine: a.line + 1, startColumn: a.character + 1,
+        endLine: b.line + 1, endColumn: b.character + 1,
+        text: textBetween(editor.getText(), a, b),
+      }
+    },
+    replaceSelection: (text: string) => {
+      const editor = editorRef.current
+      const sel = editor?.getState()?.selections?.[0]
+      if (!editor || !sel) return
+      editor.applyEdits([{ range: { start: sel.start, end: sel.end }, newText: text }])
+      editor.focus()
+    },
+    selectAll: () => {
+      const editor = editorRef.current
+      if (!editor) return
+      const lines = editor.getText().split('\n')
+      editor.setSelections([{
+        start: { line: 0, character: 0 },
+        end: { line: lines.length - 1, character: lines[lines.length - 1].length },
+        direction: 'forward',
+      }])
+      editor.focus()
+    },
+    undo: () => { editorRef.current?.undo(); editorRef.current?.focus() },
+    redo: () => { editorRef.current?.redo(); editorRef.current?.focus() },
   }), [])
 
   return (
@@ -446,7 +530,7 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
               options={resolvedDiff}
             />
           ) : (
-            <File key="file" file={editorFile} edit editorOptions={editorOptions} options={resolved} />
+            <File key="file" file={editorFile} edit editorOptions={editorOptions} options={resolved} lineAnnotations={lineAnnotations} renderAnnotation={renderAnnotation} />
           )}
           </EditProvider>
         </Virtualizer>
