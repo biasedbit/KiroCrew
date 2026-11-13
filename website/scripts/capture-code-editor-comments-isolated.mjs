@@ -335,6 +335,26 @@ try {
     JSON.stringify(list.map(c => ({ line: c.line, endLine: c.endLine, anchor: c.anchor, text: c.text }))))
   check('its mark covers the new section', JSON.stringify(await markedLines()) === '[12,13]', JSON.stringify(await markedLines()))
   await shot('overlap-replaced')
+  // 9b: a long comment opened for editing shows in full, not clipped to one line.
+  const longText = 'Return a typed result instead of None, so a caller can tell a timeout from a bad response and decide whether to retry.'
+  const retLine = await rectOf('return None', 'return')
+  await page.mouse.click(retLine.x + 2, retLine.y + retLine.h / 2)
+  await page.waitForTimeout(300)
+  await page.keyboard.press('Control+l')
+  await composer.waitFor({ state: 'visible', timeout: 5000 })
+  await composer.fill(longText)
+  await composer.press('Enter')
+  await composer.waitFor({ state: 'detached', timeout: 5000 })
+  await page.waitForTimeout(400)
+  await page.mouse.click(retLine.x + 2, retLine.y + retLine.h / 2)
+  await page.waitForTimeout(300)
+  await page.keyboard.press('Control+l')
+  await composer.waitFor({ state: 'visible', timeout: 5000 })
+  await page.waitForTimeout(300)
+  const fit = await composer.evaluate(el => ({ value: el.value.length, scroll: el.scrollHeight, client: el.clientHeight }))
+  check('a long comment opened for editing is not clipped', fit.value === longText.length && fit.client >= fit.scroll && fit.client > 30, JSON.stringify(fit))
+  await composer.press('Escape')
+  await composer.waitFor({ state: 'detached', timeout: 5000 })
 
   // Paste with the clipboard read refused: a visible note names the keyboard paste.
   await page.goto(`http://127.0.0.1:${PORT}/capture/code-editor-comments.html?theme=dark`, { waitUntil: 'networkidle', timeout: 180000 })

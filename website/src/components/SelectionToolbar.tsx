@@ -1546,6 +1546,17 @@ export function ComposerBox({ inputRef, autoFocus, actions, copiedId, hintIdBase
     measureAutoGrowTextarea(el, COMPOSER_MAX_INPUT_H)
     onGrow()
   }, [onGrow])
+  // Text that arrives without typing (a restored draft, a comment the host
+  // opened for editing) is sized too, or a long one stays one line tall and
+  // clips until the first keystroke. Only a change of text sizes it, so an
+  // ordinary rerender does not ask the parent to grow again.
+  const sizedTextRef = useRef<string | null>(null)
+  useLayoutEffect(() => {
+    if (sizedTextRef.current === text) return
+    sizedTextRef.current = text
+    const el = inputRef.current
+    if (el && el.value) autoGrow(el)
+  }, [text, autoGrow, inputRef])
 
   // Read when a transcript lands, which can be renders after the press.
   const textRef = useRef(text)

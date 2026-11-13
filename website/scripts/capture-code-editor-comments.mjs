@@ -8,7 +8,8 @@
  *   2. select lines 12-13, right-click, "Comment on this section" (the first
  *      menu item), type, add; the commented text is marked in the editor;
  *   3. type two lines at the top; the comment moves to lines 14-15 with its code;
- *   4. select `range(3)`, comment on it; adding a comment saves nothing;
+ *   4. select `range(3)`, comment on it with Ctrl+L; adding a comment saves
+ *      nothing; selecting overlapping text opens that comment to edit;
  *   5. Submit All: one chat message names `lines 14-15` and the `range(3)` line;
  *   6. the agent edits the file; the panel reloads it and shows the diff.
  *
@@ -141,7 +142,10 @@ async function main() {
   const shot = async name => {
     step += 1
     const file = join(OUT, `${String(step).padStart(2, '0')}-${name}.png`)
+    // The caption and the cursor dot are for the video; the stills go without.
+    await page.evaluate(() => { for (const id of ['demo-caption', 'demo-cursor']) { const el = document.getElementById(id); if (el) el.style.visibility = 'hidden' } })
     await page.screenshot({ path: file })
+    await page.evaluate(() => { for (const id of ['demo-caption', 'demo-cursor']) { const el = document.getElementById(id); if (el) el.style.visibility = '' } })
     console.log('      frame', file)
   }
 
@@ -254,11 +258,16 @@ async function main() {
   check(`after 2 new lines above, the comment is on lines ${L_EXCEPT + 2}-${L_EXCEPT + 3}`, list[0]?.line === L_EXCEPT + 2 && list[0]?.endLine === L_EXCEPT + 3, JSON.stringify(list[0] && [list[0].line, list[0].endLine]))
   await shot('moved')
 
-  // 4 — part of one line; adding a comment saves the file.
-  await caption('Comment on part of a line. Nothing is saved yet.')
+  // 4 — part of one line, from the keyboard; adding a comment saves nothing.
+  await caption('Or press Cmd/Ctrl+L: comment on part of a line. Nothing is saved yet.')
   const r3 = await rectOf('for attempt', 'range(3)')
   await drag(r3, r3)
-  await commentViaMenu(r3, 'Make the attempt count and backoff parameters, and back off exponentially.')
+  await page.waitForTimeout(600)
+  await page.keyboard.press('Control+l')
+  await composer.waitFor({ state: 'visible', timeout: 10000 })
+  await page.waitForTimeout(300)
+  await composer.pressSequentially('Make the attempt count and backoff parameters, and back off exponentially.', { delay: 28 })
+  await page.waitForTimeout(500)
   await composer.press('Enter')
   await composer.waitFor({ state: 'detached', timeout: 10000 })
   await page.waitForTimeout(1500)
@@ -268,6 +277,20 @@ async function main() {
   check('adding a comment does not save the file', !readFileSync(FILE, 'utf8').startsWith('"""Retry helper'))
   await page.waitForTimeout(800)
   await shot('two-comments')
+
+  // 4b — text that overlaps a pending comment opens that comment to edit.
+  await caption('Select text that overlaps a comment: the box opens with that comment.')
+  await drag(await rectOf('for attempt', 'range(3):'), await rectOf('for attempt', 'range(3):'))
+  await page.waitForTimeout(500)
+  await page.keyboard.press('Control+l')
+  await composer.waitFor({ state: 'visible', timeout: 10000 })
+  await page.waitForTimeout(2500)
+  check('an overlapping selection opens the existing comment', (await composer.inputValue()).startsWith('Make the attempt count'), await composer.inputValue())
+  await shot('edit-overlap')
+  await composer.press('Escape')
+  await composer.waitFor({ state: 'detached', timeout: 10000 })
+  await page.waitForTimeout(800)
+  check('Escape leaves both comments as they were', (await drafts()).length === 2 && (await drafts())[1]?.anchor === 'range(3)')
 
   // 5 — an unsaved edit: a tab above Submit All says it will save it first.
   await caption('A warning above Submit All: submitting saves unsaved changes.')
