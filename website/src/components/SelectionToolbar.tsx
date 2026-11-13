@@ -383,8 +383,10 @@ interface SelectionToolbarProps {
    * `start` is the selection's character offset in ITS document, when the
    * host knows it: with the text it keys the `draftStore` slot, so a draft
    * interrupted by a teardown comes back over the same passage here too.
+   * `initialText` fills the box when no draft is saved for the passage (the
+   * host is editing an existing comment); it is not a draft until changed.
    */
-  externalSelection?: { text: string; x: number; y: number; start?: number } | null
+  externalSelection?: { text: string; x: number; y: number; start?: number; initialText?: string } | null
   /** Type-first annotation input; see `SelectionComposer`. Omit for the plain action row. */
   composer?: SelectionComposer
   /**
@@ -617,13 +619,15 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
   // that is re-targeted onto another passage restores THAT passage's saved
   // draft — skipping it would leave the box empty over a slot with text in it,
   // and the first keystroke would overwrite that text for good.
-  const restoreDraft = useCallback((text: string) => {
+  const restoreDraft = useCallback((text: string, initialText?: string) => {
+    if (composerDraftRef.current) return
     const store = composerRef.current?.draftStore
-    if (composerDraftRef.current || !store) return
-    const saved = store.read(text, savedSelectionRef.current?.start ?? -1)
+    const saved = store?.read(text, savedSelectionRef.current?.start ?? -1)
     if (saved && saved.trim()) {
       setComposerText(saved)
       onComposerDraftChange(true)
+    } else if (initialText) {
+      setComposerText(initialText)
     }
   }, [onComposerDraftChange])
 
@@ -1153,7 +1157,7 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       setSubmitFailed(false)
       setComposerOpenSeq(n => n + 1)
       activeComposer.onOpen?.(externalSelection.text)
-      restoreDraft(externalSelection.text)
+      restoreDraft(externalSelection.text, externalSelection.initialText)
     }
     setVisible(true)
   }, [externalSelection, restoreDraft])

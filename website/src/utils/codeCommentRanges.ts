@@ -119,3 +119,34 @@ export function relocateCommentsByText(comments: InlineComment[], before: string
   })
   return changed ? next : comments
 }
+
+/**
+ * The range of text a code comment covers, in 1-based lines and columns with
+ * an exclusive end, worked out from where it starts and its text. Returns null
+ * for a comment with no location or no text.
+ */
+export function commentRange(c: InlineComment): { line: number; column: number; endLine: number; endColumn: number } | null {
+  if (!isCodeComment(c) || !c.anchor) return null
+  const lines = c.anchor.split('\n')
+  const last = lines[lines.length - 1]
+  return lines.length === 1
+    ? { line: c.line, column: c.column, endLine: c.line, endColumn: c.column + last.length }
+    : { line: c.line, column: c.column, endLine: c.line + lines.length - 1, endColumn: last.length + 1 }
+}
+
+/**
+ * The pending code comments whose text overlaps `section` (1-based lines and
+ * columns, exclusive end), in the order they were added. Text that only
+ * touches a section's edge does not overlap it.
+ */
+export function overlappingComments(
+  comments: InlineComment[],
+  section: { startLine: number; startColumn: number; endLine: number; endColumn: number },
+): InlineComment[] {
+  const before = (aLine: number, aCol: number, bLine: number, bCol: number) => aLine < bLine || (aLine === bLine && aCol < bCol)
+  return comments.filter(c => {
+    const r = c.image ? null : commentRange(c)
+    if (!r) return false
+    return before(r.line, r.column, section.endLine, section.endColumn) && before(section.startLine, section.startColumn, r.endLine, r.endColumn)
+  })
+}

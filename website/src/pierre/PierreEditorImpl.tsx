@@ -4,7 +4,7 @@
  * the same lazy chunk; reach it through `../pierre` only.
  */
 import { forwardRef, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { BaseCodeOptions, FileContents, LineAnnotation } from '@pierre/diffs'
+import type { BaseCodeOptions, FileContents } from '@pierre/diffs'
 import { EditProvider, File, MultiFileDiff, Virtualizer } from '@pierre/diffs/react'
 import { Editor, type EditorOptions } from '@pierre/diffs/edit'
 import { useIsDark } from '../hooks/useIsDark'
@@ -21,9 +21,17 @@ import { activeWorkerPool, contentCacheKey, fenceLanguage, PierreShell, usePierr
 import { isPierreFilePairWithinBudget } from './renderBudget'
 
 export interface EditorMarker {
-  severity: 'error' | 'warning' | 'info'
+  /** `hint` is the code editor's pending-comment mark; see `CodeEditor`. */
+  severity: 'error' | 'warning' | 'info' | 'hint'
   message: string
+  /** 1-based. Without `column`, the marker covers the whole line. */
   line: number
+  /** 1-based column where the marker starts. */
+  column?: number
+  /** 1-based line and column where the marker ends, exclusive; default `line`
+   *  and its end. */
+  endLine?: number
+  endColumn?: number
 }
 
 export interface PierreEditorHandle {
@@ -39,6 +47,9 @@ export interface PierreEditorHandle {
    *  undoable edit. Does nothing before Pierre binds its editor. */
   replaceSelection: (text: string) => void
   selectAll: () => void
+  /** Focuses the editor with the caret at 1-based `line`, `column`. Does
+   *  nothing before Pierre binds its editor. */
+  placeCaret: (line: number, column: number) => void
   undo: () => void
   redo: () => void
 }
@@ -119,8 +130,11 @@ function applyMarkers(editor: Editor<unknown>, markers: EditorMarker[] | undefin
     markers.map(marker => ({
       severity: marker.severity,
       message: marker.message,
-      start: { line: marker.line - 1, character: 0 },
-      end: { line: marker.line - 1, character: Number.MAX_SAFE_INTEGER },
+      start: { line: marker.line - 1, character: marker.column == null ? 0 : marker.column - 1 },
+      end: {
+        line: (marker.endLine ?? marker.line) - 1,
+        character: marker.endColumn == null ? Number.MAX_SAFE_INTEGER : marker.endColumn - 1,
+      },
     })),
   )
 }
@@ -150,16 +164,10 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
    *  changes; never in the plain editor, never on unmount. */
   onLiveDiffDegraded?: (degraded: boolean) => void
   className?: string
-  /** Rows pinned under lines of the plain editor (not the live diff). Pierre
-   *  moves them with each edit and reports the moved set through
-   *  `onLineAnnotationsChange`. */
-  lineAnnotations?: LineAnnotation<unknown>[]
-  renderAnnotation?: (annotation: LineAnnotation<unknown>) => React.ReactNode
-  onLineAnnotationsChange?: (annotations: LineAnnotation<unknown>[]) => void
   /** Each edit as text replacements, in offsets into `before`, the text the
    *  edit started from. */
   onEdits?: (before: string, after: string, changes: { start: number; end: number; text: string }[]) => void
-}>(function PierreEditorImpl({ file, langHint, options, onChange, onSave, markers, onCursorChange, diffBase, diffSplit, diffExpandUnchanged, onLiveDiffDegraded, className, lineAnnotations, renderAnnotation, onLineAnnotationsChange, onEdits }, ref) {
+}>(function PierreEditorImpl({ file, langHint, options, onChange, onSave, markers, onCursorChange, diffBase, diffSplit, diffExpandUnchanged, onLiveDiffDegraded, className, onEdits }, ref) {
   const lang = file.lang || (langHint ? fenceLanguage(langHint) : undefined)
   const dark = useIsDark()
   const themes = usePierreThemes()
@@ -338,8 +346,6 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   onSaveRef.current = onSave
   const onCursorRef = useRef(onCursorChange)
   onCursorRef.current = onCursorChange
-  const onAnnotationsChangeRef = useRef(onLineAnnotationsChange)
-  onAnnotationsChangeRef.current = onLineAnnotationsChange
   const onEditsRef = useRef(onEdits)
   onEditsRef.current = onEdits
   const generationRef = useRef(poolState.generation)
@@ -398,7 +404,7 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
           editor.focus()
         }
       },
-      onChange(changed, movedAnnotations, event) {
+      onChange(changed, _annotations, event) {
         // `contents` is a getter that joins the whole document: read it once.
         const contents = changed.contents
         const before = latestContentsRef.current
@@ -412,11 +418,6 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
           onEditsRef.current?.(before, contents, event.changes.map(ch => ({ start: ch.start, end: ch.end, text: ch.text })))
         }
         onChangeRef.current(contents)
-        // The plain editor's annotations, shifted by this edit. The live diff
-        // reports side-tagged diff annotations, which no caller here uses.
-        if (movedAnnotations && !movedAnnotations.some(a => 'side' in a)) {
-          onAnnotationsChangeRef.current?.(movedAnnotations as LineAnnotation<unknown>[])
-        }
         reportCursor()
       },
     }),
@@ -476,6 +477,13 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
       editor.applyEdits([{ range: { start: sel.start, end: sel.end }, newText: text }])
       editor.focus()
     },
+    placeCaret: (line: number, column: number) => {
+      const editor = editorRef.current
+      if (!editor) return
+      const at = { line: line - 1, character: column - 1 }
+      editor.setSelections([{ start: at, end: at, direction: 'forward' }])
+      editor.focus()
+    },
     selectAll: () => {
       const editor = editorRef.current
       if (!editor) return
@@ -530,7 +538,7 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
               options={resolvedDiff}
             />
           ) : (
-            <File key="file" file={editorFile} edit editorOptions={editorOptions} options={resolved} lineAnnotations={lineAnnotations} renderAnnotation={renderAnnotation} />
+            <File key="file" file={editorFile} edit editorOptions={editorOptions} options={resolved} />
           )}
           </EditProvider>
         </Virtualizer>

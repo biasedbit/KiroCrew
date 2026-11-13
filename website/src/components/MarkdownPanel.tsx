@@ -14,7 +14,7 @@ import { useImageBoxDraft, useImageBoxHost } from './useImageBoxComments'
 import { ImageCommentCtx, popoverBesideBox, type PlainRect } from '../utils/imageComments'
 import SelectionToolbar, { type SelectionAction, type SelectionComposer } from './SelectionToolbar'
 import type { EditorCommenting } from './CodeEditor'
-import { mapCommentsThroughEdits, relocateCommentsByText } from '../utils/codeCommentRanges'
+import { commentRange, mapCommentsThroughEdits, overlappingComments, relocateCommentsByText } from '../utils/codeCommentRanges'
 import MarkdownOutlineRail from './MarkdownToc'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 import { useDiffSplit } from '../hooks/useDiffSplit'
@@ -332,9 +332,24 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const pendingAnchorRef = useRef<{ anchor: string; line?: number; endLine?: number; column?: number; startOffset?: number; renderedQuote?: string; inCode?: boolean; codePosition?: number } | null>(null)
   // A code file in the editor: the section "Comment on this section" was
   // chosen for, staged until the composer opens over it (see `editorCommenting`).
-  const stagedSectionRef = useRef<{ startLine: number; startColumn: number; endLine: number; quote: string } | null>(null)
-  const [editorCommentSelection, setEditorCommentSelection] = useState<{ text: string; x: number; y: number; start?: number } | null>(null)
-  const [activeEditorCommentId, setActiveEditorCommentId] = useState<string | null>(null)
+  // `replaces` names the pending comments the section overlaps: the box opens
+  // with their text, and submitting puts the one comment in their place.
+  const stagedSectionRef = useRef<{ startLine: number; startColumn: number; endLine: number; quote: string; replaces: string[] } | null>(null)
+  const [editorCommentSelection, setEditorCommentSelection] = useState<{ text: string; x: number; y: number; start?: number; initialText?: string } | null>(null)
+  // The code editor's handle (kept in step with `revealEditor` below), for
+  // handing focus back to the editor when a comment box made there closes.
+  const commentEditorRef = useRef<PierreEditorHandle | null>(null)
+  /** Focuses the code editor with the caret at the end of the section a
+   *  comment box opened from the editor was for, once that box is gone, so
+   *  Cmd/Ctrl+L, typing the comment and Enter never need the mouse. Does
+   *  nothing for a comment box opened anywhere else. */
+  const returnFocusAfterSection = useCallback((section: { startLine: number; startColumn: number; endLine: number; quote: string } | null) => {
+    if (!section) return
+    const lines = section.quote.split('\n')
+    const endColumn = lines.length === 1 ? section.startColumn + section.quote.length : lines[lines.length - 1].length + 1
+    // After the box unmounts, so its own focus handling cannot take focus back.
+    setTimeout(() => commentEditorRef.current?.placeCaret(section.endLine, endColumn), 0)
+  }, [])
   // Whether the annotation box is open — read by the panel's document-level
   // Escape handler so it yields the key to the box instead of closing the panel.
   const composerOpenRef = useRef(false)
@@ -687,10 +702,11 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     composerOpenRef.current = false
     composerDraftRef.current = false
     pendingAnchorRef.current = null
+    returnFocusAfterSection(stagedSectionRef.current)
     stagedSectionRef.current = null
     setEditorCommentSelection(null)
     clearHighlightMarks()
-  }, [clearHighlightMarks])
+  }, [clearHighlightMarks, returnFocusAfterSection])
 
   // Returns the clipboard result so the toolbar's checkmark is truthful.
   const handleCopyAction = useCallback((text: string) => copyToClipboard(text), [])
@@ -705,14 +721,17 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const handleComposerSubmit = useCallback((comment: string, text: string) => {
     const info = pendingAnchorRef.current ?? { anchor: text }
     const newComment: InlineComment = { id: Math.random().toString(36).substring(2), anchor: info.anchor, text: comment, line: info.line, ...(info.endLine != null ? { endLine: info.endLine } : {}), column: info.column, startOffset: info.startOffset, ...(info.renderedQuote ? { renderedQuote: info.renderedQuote } : {}), inCode: info.inCode, codePosition: info.codePosition }
-    setComments(prev => [...prev, newComment])
+    // A box opened over existing comments in the code editor replaces them.
+    const replaced = new Set(stagedSectionRef.current?.replaces ?? [])
+    setComments(prev => [...prev.filter(c => !replaced.has(c.id)), newComment])
     composerOpenRef.current = false
     composerDraftRef.current = false
     pendingAnchorRef.current = null
+    returnFocusAfterSection(stagedSectionRef.current)
     stagedSectionRef.current = null
     setEditorCommentSelection(null)
     clearHighlightMarks()
-  }, [clearHighlightMarks])
+  }, [clearHighlightMarks, returnFocusAfterSection])
 
   // Only a host that can receive comments gets the type-first box; otherwise
   // the toolbar is the plain Copy row it always was.
@@ -736,9 +755,10 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     draftStore: composerDraftStore,
   } : undefined, [onSubmitComments, handleComposerOpen, handleComposerSubmit, handleComposerClose, handleComposerDraftChange, confirmDiscardDraft, composerDraftStore])
 
-  // Comments in the code editor: chips under each pending comment's last line,
-  // "Comment on this section" in the right-click menu, and line numbers that
-  // follow the editor's edits. Not in the live-diff editor, which takes no chips.
+  // Comments in the code editor: each pending comment's text marked in the
+  // editor, "Comment on this section" in the right-click menu, and line numbers
+  // that follow the editor's edits. Not in the live-diff editor, which takes no
+  // comments.
   const canCommentInEditor = !isMarkdown && !isRichType && !readOnly && !!onSubmitComments && !diffMode
   // A new version of the file that did not come from typing (the agent's edit,
   // reloaded from disk) carries no edit list: each pending comment is found
@@ -754,14 +774,20 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const editorCommenting: EditorCommenting | undefined = useMemo(() => {
     if (!canCommentInEditor || !editing) return undefined
     return {
-      annotations: comments.filter(c => c.line != null && !c.image).map(c => ({ id: c.id, line: c.endLine ?? c.line!, count: 1, unread: false })),
-      activeId: activeEditorCommentId,
-      onActivate: setActiveEditorCommentId,
+      marks: comments.flatMap(c => {
+        const r = c.image ? null : commentRange(c)
+        return r ? [{ id: c.id, ...r, text: c.text }] : []
+      }),
       onComment: (section, x, y) => {
-        stagedSectionRef.current = { startLine: section.startLine, startColumn: section.startColumn, endLine: section.endLine, quote: section.text }
+        // A section over text that already has comments edits them: the box
+        // opens with their text, and its submit replaces them with one comment
+        // on the new section.
+        const overlapped = overlappingComments(comments, section)
+        stagedSectionRef.current = { startLine: section.startLine, startColumn: section.startColumn, endLine: section.endLine, quote: section.text, replaces: overlapped.map(c => c.id) }
         // `start` keys the composer's draft slot, as a text offset would.
         const start = content.split('\n').slice(0, section.startLine - 1).reduce((n, l) => n + l.length + 1, 0) + section.startColumn - 1
-        setEditorCommentSelection({ text: section.text, x, y, start })
+        const initialText = overlapped.length ? overlapped.map(c => c.text).join('\n\n') : undefined
+        setEditorCommentSelection({ text: section.text, x, y, start, ...(initialText ? { initialText } : {}) })
       },
       // Both ends of every section move through the edit, so a section keeps
       // naming exactly its text however the user edits around or inside it.
@@ -769,7 +795,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
         setComments(prev => mapCommentsThroughEdits(prev, before, after, changes))
       },
     }
-  }, [canCommentInEditor, editing, comments, activeEditorCommentId, content])
+  }, [canCommentInEditor, editing, comments, content])
 
   const removeComment = useCallback((id: string) => {
     setComments(prev => prev.filter(c => c.id !== id))
@@ -946,6 +972,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
    * commit that attaches the handle. A ref attaches without a render and
    * would strand the jump. `setRevealEditor` is a stable callback ref. */
   const [revealEditor, setRevealEditor] = useState<PierreEditorHandle | null>(null)
+  commentEditorRef.current = revealEditor
   const lastRevealNonce = useRef<number | null>(null)
   // The host passes an inline arrow, so `onRevealConsumed` is a new function on
   // every one of its renders. Reading it through a latest-value ref keeps the

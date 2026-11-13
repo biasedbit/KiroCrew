@@ -179,8 +179,9 @@ function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPromp
    *  submit can't fire (and clear pending comments) while the send path would
    *  silently refuse it. Defaults true for non-chat embeddings. */
   connected?: boolean
-  /** A short warning beside Submit All about what pressing it also does (a
-   *  code editor with unsaved changes saves them first). Absent, nothing is shown. */
+  /** A short warning about what pressing Submit All also does (a code editor
+   *  with unsaved changes saves them first), on a tab above the button.
+   *  Absent, nothing is shown. */
   submitNote?: string
 }) {
   const kept = draftKey !== undefined ? extraPromptDrafts.get(draftKey) : undefined
@@ -210,7 +211,11 @@ function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPromp
   useEffect(() => { if (showExtraPrompt) extraPromptRef.current?.focus() }, [showExtraPrompt])
   if (comments.length === 0) return null
   return (
-    <div className="border-t border-border bg-chrome px-3 py-2">
+    <div className="relative border-t border-border bg-chrome px-3 py-2">
+      {/* A tab on the list's top edge, above Submit All and over the content
+          above, so the header row keeps its room. It covers the list's top
+          border so it reads as part of the list. */}
+      {submitNote && <span role="status" className="absolute bottom-full right-3 z-10 inline-flex items-center gap-1 rounded-t-md border border-b-0 border-border bg-chrome px-2 py-1 text-[11px] text-warn" data-testid="submit-note"><TriangleAlert size={12} aria-hidden="true" />{submitNote}</span>}
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <span className="text-[13px] font-semibold text-text">{i18nT('components.commentOverlay.comment', { count: comments.length })} {i18nT('components.commentOverlay.pending')}</span>
@@ -226,7 +231,6 @@ function CommentList({ comments, onEdit, onRemove, onSubmitAll, enableExtraPromp
           )}
         </div>
         <div className="flex items-center gap-2">
-        {submitNote && <span role="status" className="inline-flex items-center gap-1 text-[11px] text-warn" data-testid="submit-note"><TriangleAlert size={12} aria-hidden="true" />{submitNote}</span>}
         <SendBtn disabled={!connected} {...offlineProps(connected, i18nT('utils.offline.submit_comments'), i18nT('components.commentOverlay.submit_all'))} onClick={() => {
           const clear = () => { setExtraPrompt(''); setShowExtraPrompt(false) }
           const sent = onSubmitAll(enableExtraPrompt && showExtraPrompt ? extraPrompt : undefined)

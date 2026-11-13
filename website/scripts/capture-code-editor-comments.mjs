@@ -6,7 +6,7 @@
  * Flow, each step asserted before the script moves on:
  *   1. open retry.py from the side panel's Files tree; it opens in the editor;
  *   2. select lines 12-13, right-click, "Comment on this section" (the first
- *      menu item), type, add; a chip appears under line 13;
+ *      menu item), type, add; the commented text is marked in the editor;
  *   3. type two lines at the top; the comment moves to lines 14-15 with its code;
  *   4. select `range(3)`, comment on it; adding a comment saves nothing;
  *   5. Submit All: one chat message names `lines 14-15` and the `range(3)` line;
@@ -203,7 +203,9 @@ async function main() {
     await page.waitForTimeout(500)
   }
   const composer = page.getByLabel('Comment on the selected text')
-  const chips = page.locator('[data-mc-code-chip]')
+  /** How many pending-comment marks (Pierre `hint` markers) the editor shows. */
+  const markCount = () => page.evaluate(() => [...document.querySelectorAll('diffs-container')]
+    .reduce((n, h) => n + (h.shadowRoot?.querySelectorAll('[data-marker-range][data-marker-hint]').length ?? 0), 0))
   const menuComment = page.getByRole('menuitem', { name: /Comment on this section/ })
   const drafts = async () => Object.values(JSON.parse(await page.evaluate(() => localStorage.getItem('mc-comment-drafts') || '{}')))[0] || []
 
@@ -233,14 +235,14 @@ async function main() {
   await shot('composer')
   await composer.press('Enter')
   await composer.waitFor({ state: 'detached', timeout: 10000 })
-  await chips.first().waitFor({ timeout: 10000 })
+  await page.waitForFunction(() => [...document.querySelectorAll('diffs-container')].some(h => h.shadowRoot?.querySelector('[data-marker-range][data-marker-hint]')), null, { timeout: 10000 })
   let list = await drafts()
   check(`the comment covers lines ${L_EXCEPT}-${L_EXCEPT + 1}`, list[0]?.line === L_EXCEPT && list[0]?.endLine === L_EXCEPT + 1)
   await page.waitForTimeout(1200)
-  await shot('chip')
+  await shot('mark')
 
-  // 3 — keep editing: two lines typed above move the comment and its chip.
-  await caption('Keep editing. The comment and its chip follow their lines.')
+  // 3 — keep editing: two lines typed above move the comment and its mark.
+  await caption('Keep editing. The comment follows its lines.')
   const top = await rectOf('import time', 'import')
   await page.mouse.move(top.x + 1, top.y + top.h / 2, { steps: 15 })
   await page.mouse.click(top.x + 1, top.y + top.h / 2)
@@ -262,13 +264,13 @@ async function main() {
   await page.waitForTimeout(1500)
   list = await drafts()
   check('the second comment is on part of one line', list[1]?.anchor === 'range(3)' && list[1]?.endLine === undefined, JSON.stringify(list[1] && { line: list[1].line, column: list[1].column }))
-  check('two chips, two pending comments', (await chips.count()) === 2)
+  check('two pending comments, each marked (3 marked lines)', (await markCount()) === 3, String(await markCount()))
   check('adding a comment does not save the file', !readFileSync(FILE, 'utf8').startsWith('"""Retry helper'))
   await page.waitForTimeout(800)
   await shot('two-comments')
 
-  // 5 — an unsaved edit: a note beside Submit All says it will save it first.
-  await caption('A warning beside Submit All: submitting saves unsaved changes.')
+  // 5 — an unsaved edit: a tab above Submit All says it will save it first.
+  await caption('A warning above Submit All: submitting saves unsaved changes.')
   const imp = await rectOf('import time', 'import')
   await page.mouse.move(imp.x + 2, imp.y + imp.h / 2, { steps: 12 })
   await page.mouse.click(imp.x + 2, imp.y + imp.h / 2)
@@ -277,7 +279,7 @@ async function main() {
   await page.keyboard.type('import logging\n', { delay: 35 })
   await page.waitForTimeout(1000)
   const note = page.getByTestId('submit-note')
-  check('the note shows beside Submit All', await note.isVisible().catch(() => false), await note.innerText().catch(() => ''))
+  check('the note shows above Submit All', await note.isVisible().catch(() => false), await note.innerText().catch(() => ''))
   check('the unsaved line is not on disk yet', !readFileSync(FILE, 'utf8').includes('import logging'))
   list = await drafts()
   const L_RANGE = list[1]?.line

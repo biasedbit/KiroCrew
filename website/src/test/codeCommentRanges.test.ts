@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { InlineComment } from '../components/CommentOverlay'
-import { mapCommentsThroughEdits, relocateCommentsByText, type TextChange } from '../utils/codeCommentRanges'
+import { commentRange, mapCommentsThroughEdits, overlappingComments, relocateCommentsByText, type TextChange } from '../utils/codeCommentRanges'
 
 const FILE = [
   'def retry(fn):',            // 1
@@ -99,5 +99,46 @@ describe('relocateCommentsByText', () => {
     const out = relocateCommentsByText([word()], FILE, after)
     expect(out[0].line).toBeUndefined()
     expect(out[0].column).toBeUndefined()
+  })
+})
+
+describe('commentRange', () => {
+  it('ends a one-line comment after its text, on the same line', () => {
+    // 'range(3)' starts at column 14 of line 2, so it ends before column 22.
+    expect(commentRange(word())).toEqual({ line: 2, column: 14, endLine: 2, endColumn: 22 })
+  })
+
+  it('ends a multi-line comment after the last line of its text', () => {
+    // The last line of RANGE is '            pass', 16 characters long.
+    expect(commentRange(range())).toEqual({ line: 5, column: 1, endLine: 6, endColumn: 17 })
+  })
+
+  it('returns null for a comment with no location', () => {
+    const { line: _l, column: _c, ...unplaced } = word()
+    expect(commentRange(unplaced)).toBeNull()
+  })
+})
+
+describe('overlappingComments', () => {
+  // `word` covers line 2, columns 14-21 ('range(3)'); `range` covers lines 5-6.
+  const both = () => [range(), word()]
+
+  it('finds a comment a new section starts inside of', () => {
+    // Line 2 from column 18 ('e(3):') to the end: overlaps the tail of 'range(3)'.
+    expect(overlappingComments(both(), { startLine: 2, startColumn: 18, endLine: 2, endColumn: 23 }).map(c => c.id)).toEqual(['w'])
+  })
+
+  it('finds a comment a new section covers entirely', () => {
+    expect(overlappingComments(both(), { startLine: 4, startColumn: 1, endLine: 7, endColumn: 1 }).map(c => c.id)).toEqual(['r'])
+  })
+
+  it('finds every comment a section spans, in the order they were added', () => {
+    expect(overlappingComments(both(), { startLine: 1, startColumn: 1, endLine: 6, endColumn: 5 }).map(c => c.id)).toEqual(['r', 'w'])
+  })
+
+  it('ignores a section that only touches a comment edge', () => {
+    // 'range(3)' ends before column 22, so a section starting at 22 does not overlap.
+    expect(overlappingComments(both(), { startLine: 2, startColumn: 22, endLine: 2, endColumn: 23 })).toEqual([])
+    expect(overlappingComments(both(), { startLine: 2, startColumn: 1, endLine: 2, endColumn: 14 })).toEqual([])
   })
 })

@@ -1,22 +1,28 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
-import type { LineAnnotation } from '@pierre/diffs'
 import { ClipboardPaste, Copy, MessageSquarePlus, Redo2, Scissors, TextSelect, TriangleAlert, Undo2 } from 'lucide-react'
 
-import { PierreEditor, type EditorSelectionInfo, type PierreEditorHandle } from '../pierre'
+import { PierreEditor, type EditorMarker, type EditorSelectionInfo, type PierreEditorHandle } from '../pierre'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from './ui/context-menu'
-import { ThreadChip } from './CodeBlock'
-import type { CodeLineAnnotationMeta } from './codeComments'
 import { copyToClipboard } from '../utils/clipboard'
 import { isMac } from '../utils/platform'
 import { i18nT } from '../i18n/t'
 
+/** A pending comment's mark in the editor: the text it covers, in 1-based
+ *  lines and columns with an exclusive end, and the comment itself. */
+export interface EditorCommentMark {
+  id: string
+  line: number
+  column: number
+  endLine: number
+  endColumn: number
+  /** The comment, shown when the pointer rests on the marked text. */
+  text: string
+}
+
 /** Pending comments in the editor, owned by the host. */
 export interface EditorCommenting {
-  /** One chip per pending comment, under the last line of its range. */
-  annotations: CodeLineAnnotationMeta[]
-  /** The comment whose chip was last clicked; its chip renders filled. */
-  activeId: string | null
-  onActivate: (id: string) => void
+  /** One mark per pending comment, over the text it covers. */
+  marks: EditorCommentMark[]
   /** "Comment on this section": the selection to comment on (the caret's line
    *  when nothing is selected) and where the menu was opened, in viewport px. */
   onComment: (section: EditorSelectionInfo, x: number, y: number) => void
@@ -58,6 +64,18 @@ function clickedLineOf(e: React.MouseEvent): number | null {
 
 const mod = isMac ? '⌘' : 'Ctrl+'
 
+/** Pending comments are Pierre markers of severity `hint`, restyled from its
+ *  wavy diagnostic underline to the markdown view's comment highlight (the
+ *  `mc-comment` rule in `MarkdownPanel`): an accent tint behind the text with
+ *  a 2px accent underline. Pierre's hover popover for markers is hidden; the
+ *  comment's text is in the pending list. `!important` because Pierre puts
+ *  `unsafeCSS` in a cascade layer and its editor sheet outside any layer,
+ *  which wins over a layer's normal rules. */
+const COMMENT_MARK_CSS = `
+[data-marker-range][data-marker-hint]{z-index:-10!important;mask:none!important;-webkit-mask:none!important;box-sizing:border-box!important;background-color:var(--accent-subtle,rgba(99,102,241,0.18))!important;border-bottom:2px solid var(--accent,#6366f1)!important;border-radius:0!important}
+[data-marker-popover][data-marker-hint]{display:none!important}
+`
+
 /** Pierre-based code editor for editable text content. */
 export function CodeEditor({
   content, lang, lineNums, wordWrap, onChange, onSave, flush, editorRef, filePath, diffBase, diffSplit, diffExpandUnchanged, onLiveDiffDegraded, commenting,
@@ -83,9 +101,9 @@ export function CodeEditor({
   /** Live-diff editing only: whether the live diff was dropped for being
    *  over the inline budget (see `PierreEditorImpl`). */
   onLiveDiffDegraded?: (degraded: boolean) => void
-  /** Pending comments: chips under their lines, "Comment on this section" at
-   *  the top of the right-click menu, and moved line numbers after each edit.
-   *  Absent, the menu has only the edit actions. */
+  /** Pending comments: each one's text marked in the editor, "Comment on this
+   *  section" at the top of the right-click menu, and edits reported so the
+   *  host can move the comments. Absent, the menu has only the edit actions. */
   commenting?: EditorCommenting
 }) {
   // Pierre owns the buffer during an edit session. Keep its file identity
@@ -94,8 +112,6 @@ export function CodeEditor({
   const lastEmittedRef = useRef<string | null>(null)
   const lastContentRef = useRef<string | null>(null)
   const seedRef = useRef(0)
-  // Each comment's line as the editor last reported it; see `lineAnnotations`.
-  const liveLinesRef = useRef(new Map<string, number>())
   const key = `${filePath ?? ''}:${lang}:${diffBase === undefined ? 'plain' : 'diff'}`
   const seedFile = () => ({
     key,
@@ -113,8 +129,6 @@ export function CodeEditor({
     } else {
       seedRef.current++
       initialRef.current = seedFile()
-      // A new document from outside: the host's stored lines are the truth again.
-      liveLinesRef.current = new Map()
     }
   }
   lastContentRef.current = content
@@ -131,12 +145,14 @@ export function CodeEditor({
     () => ({ ...initialRef.current!.file, contents: content }),
     [content],
   )
+  const commentable = commenting != null
   const options = useMemo(
     () => ({
       disableLineNumbers: !lineNums,
       overflow: (wordWrap ? 'wrap' : 'scroll') as 'wrap' | 'scroll',
+      ...(commentable ? { unsafeCSS: COMMENT_MARK_CSS } : {}),
     }),
-    [lineNums, wordWrap],
+    [lineNums, wordWrap, commentable],
   )
 
   // The menu acts on the editor through its handle, so the host's ref and this
@@ -148,6 +164,7 @@ export function CodeEditor({
     getSelection: () => handleRef.current?.getSelection() ?? null,
     replaceSelection: text => handleRef.current?.replaceSelection(text),
     selectAll: () => handleRef.current?.selectAll(),
+    placeCaret: (line, column) => handleRef.current?.placeCaret(line, column),
     undo: () => handleRef.current?.undo(),
     redo: () => handleRef.current?.redo(),
   }), [])
@@ -155,30 +172,22 @@ export function CodeEditor({
   const menuPointRef = useRef({ x: 0, y: 0 })
   const menuLineRef = useRef<number | null>(null)
 
-  // The editor owns where each chip is while it is being edited: it moves the
-  // chips on every edit and reports the moves. Pierre's File re-applies the
-  // `lineAnnotations` prop on EVERY render, so the prop must already carry the
-  // moved lines when the next render runs, or that render puts a chip back on
-  // the line it just left and the next edit shifts it from there. The reported
-  // lines land in this ref synchronously, inside the editor's change callback,
-  // before React renders; the host's own copy (via `onAnnotationsMoved`) can
-  // trail it by a render.
-  // An empty array, not undefined, once the last comment goes: Pierre keeps its
-  // previous annotations when the prop is undefined.
-  const lineAnnotations: LineAnnotation<unknown>[] | undefined = commenting
-    ? commenting.annotations.map(m => ({ lineNumber: liveLinesRef.current.get(m.id) ?? m.line, metadata: m }))
-    : undefined
-  const activeId = commenting?.activeId ?? null
-  const onActivate = commenting?.onActivate
-  const renderAnnotation = useCallback((a: LineAnnotation<unknown>) => {
-    const m = a.metadata as CodeLineAnnotationMeta
-    return <ThreadChip meta={m} active={activeId === m.id} onActivate={id => onActivate?.(id)} />
-  }, [activeId, onActivate])
-  const handleAnnotationsChange = useCallback((moved: LineAnnotation<unknown>[]) => {
-    const next = new Map<string, number>()
-    for (const a of moved) next.set((a.metadata as CodeLineAnnotationMeta).id, a.lineNumber)
-    liveLinesRef.current = next
-  }, [])
+  // Each pending comment marks the text it covers. The host maps every comment
+  // through each edit, so the marks are re-set from its positions; the array
+  // keeps its identity while they are unchanged, because setting markers also
+  // closes the comment popover.
+  const marksRef = useRef<{ key: string; markers: EditorMarker[] } | null>(null)
+  let markers: EditorMarker[] | undefined
+  if (commenting) {
+    const key = commenting.marks.map(m => `${m.id}\u0000${m.line}:${m.column}-${m.endLine}:${m.endColumn}\u0000${m.text}`).join('\u0001')
+    if (marksRef.current?.key !== key) {
+      marksRef.current = {
+        key,
+        markers: commenting.marks.map(m => ({ severity: 'hint', message: m.text, line: m.line, column: m.column, endLine: m.endLine, endColumn: m.endColumn })),
+      }
+    }
+    markers = marksRef.current.markers
+  }
 
   const selectionNow = () => handleRef.current?.getSelection() ?? null
 
@@ -245,9 +254,7 @@ export function CodeEditor({
             diffSplit={diffSplit}
             diffExpandUnchanged={diffExpandUnchanged}
             onLiveDiffDegraded={onLiveDiffDegraded}
-            lineAnnotations={lineAnnotations}
-            renderAnnotation={commenting ? renderAnnotation : undefined}
-            onLineAnnotationsChange={commenting ? handleAnnotationsChange : undefined}
+            markers={markers}
             onEdits={commenting?.onEdits}
           />
           {pasteRefused && (

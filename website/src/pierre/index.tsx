@@ -76,10 +76,6 @@ export const PierreEditor = memo(forwardRef<PierreEditorHandle, {
    *  over the inline budget (see `PierreEditorImpl`). */
   onLiveDiffDegraded?: (degraded: boolean) => void
   className?: string
-  /** Rows pinned under lines of the plain editor; see `PierreEditorImpl`. */
-  lineAnnotations?: LineAnnotation<unknown>[]
-  renderAnnotation?: (annotation: LineAnnotation<unknown>) => React.ReactNode
-  onLineAnnotationsChange?: (annotations: LineAnnotation<unknown>[]) => void
   /** Each edit as text replacements; see `PierreEditorImpl`. */
   onEdits?: (before: string, after: string, changes: { start: number; end: number; text: string }[]) => void
 }>(function PierreEditor(props, ref) {

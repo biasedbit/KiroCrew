@@ -5,11 +5,12 @@
  *
  * Checks, in order:
  *   1. the right-click menu opens with "Comment on this section" first;
- *   2. a two-line selection gets a comment on those lines and a chip;
+ *   2. a two-line selection gets a comment on those lines, its text is marked
+ *      in the editor, and resting the pointer on it shows no popover;
  *   3. typing two lines above moves the comment with its code;
  *   4. right-clicking a line with nothing selected comments on that line;
  *   5. adding a comment saves nothing;
- *   6. with unsaved edits, a warning beside Submit All says it saves them;
+ *   6. with unsaved edits, a warning on a tab above Submit All says it saves them;
  *   7. Submit All saves first, and every line number it sends names the same
  *      text in the saved file;
  *   8. a refused clipboard read shows a note naming the keyboard paste, and
@@ -74,7 +75,29 @@ const drag = async (a, b) => {
   await page.waitForTimeout(300)
 }
 const composer = page.getByLabel('Comment on the selected text')
-const chips = page.locator('[data-mc-code-chip]')
+/** The editor lines that carry a pending-comment mark (Pierre `hint` markers),
+ *  read from where each mark's box sits against the rows. */
+const markedLines = () => page.evaluate(() => {
+  const lines = new Set()
+  for (const host of document.querySelectorAll('diffs-container')) {
+    const root = host.shadowRoot
+    if (!root) continue
+    const rows = [...root.querySelectorAll('[data-line]')].map(r => ({ n: Number(r.dataset.line), b: r.getBoundingClientRect() }))
+    for (const m of root.querySelectorAll('[data-marker-range][data-marker-hint]')) {
+      const b = m.getBoundingClientRect()
+      if (b.width <= 0) continue
+      const y = b.top + b.height / 2
+      const row = rows.find(r => y >= r.b.top && y < r.b.bottom)
+      if (row) lines.add(row.n)
+    }
+  }
+  return [...lines].sort((a, b) => a - b)
+})
+/** Whether the editor shows a marker popover. */
+const popoverVisible = () => page.evaluate(() => [...document.querySelectorAll('diffs-container')].some(host => {
+  const p = host.shadowRoot?.querySelector('[data-marker-popover]')
+  return !!p && getComputedStyle(p).display !== 'none' && p.getBoundingClientRect().width > 0
+}))
 const note = page.getByTestId('submit-note')
 const drafts = async () => Object.values(JSON.parse(await page.evaluate(() => localStorage.getItem('mc-comment-drafts') || '{}')))[0] || []
 
@@ -108,7 +131,13 @@ try {
   check('"Comment on this section" is the first menu item', items[0]?.includes('Comment on this section'), items.map(t => t.replace(/\s+/g, ' ').trim()).join(' | '))
   let list = await drafts()
   check('the comment covers lines 12-13', list[0]?.line === 12 && list[0]?.endLine === 13, JSON.stringify(list[0] && [list[0].line, list[0].endLine]))
-  check('a chip shows in the editor', (await chips.count()) === 1)
+  check('the commented lines 12-13 are marked in the editor', JSON.stringify(await markedLines()) === '[12,13]', JSON.stringify(await markedLines()))
+  const excRect = await rectOf('except Exception', 'Exception')
+  await page.mouse.move(excRect.x + excRect.w / 2, excRect.y + excRect.h / 2)
+  await page.waitForTimeout(700)
+  check('resting the pointer on the marked text shows no popover', !(await popoverVisible()))
+  await page.mouse.move(5, 5)
+  await page.waitForTimeout(300)
   await shot('range-comment')
 
   // 3: two lines typed above move the comment.
@@ -122,6 +151,7 @@ try {
   await page.waitForTimeout(800)
   list = await drafts()
   check('after 2 lines above, the comment is on lines 14-15', list[0]?.line === 14 && list[0]?.endLine === 15, JSON.stringify(list[0] && [list[0].line, list[0].endLine]))
+  check('its mark moves to lines 14-15', JSON.stringify(await markedLines()) === '[14,15]', JSON.stringify(await markedLines()))
 
   // 4-5: right-click a line with nothing selected; adding the comment saves.
   const savesBefore = await page.evaluate(() => window.__saves.length)
@@ -134,6 +164,12 @@ try {
   const disk1 = await page.evaluate(() => window.__disk)
   check('adding a comment does not save the file', (await page.evaluate(() => window.__saves.length)) === savesBefore && !disk1.startsWith('# a'))
   check('the warning shows while edits are unsaved', await note.isVisible().catch(() => false))
+  const tab = await note.evaluate(el => {
+    const n = el.getBoundingClientRect(), list = el.parentElement.getBoundingClientRect()
+    const send = [...el.parentElement.querySelectorAll('button')].find(b => /submit all/i.test(b.textContent ?? ''))?.getBoundingClientRect()
+    return { aboveList: n.bottom <= list.top + 1, overSend: !!send && n.right <= send.right + 1 && n.right >= send.left }
+  }).catch(() => ({}))
+  check('the warning is a tab above the list, over Submit All', tab.aboveList && tab.overSend, JSON.stringify(tab))
   await shot('two-comments')
 
   // 6: unsaved edits show the note.
@@ -162,6 +198,24 @@ try {
   await page.waitForTimeout(500)
   let after = await drafts()
   check('Ctrl+L comment covers the selected text', after.length === before + 1 && after.at(-1)?.anchor === 'time.sleep(1)', JSON.stringify(after.at(-1) && { line: after.at(-1).line, anchor: after.at(-1).anchor }))
+  // Enter hands focus back to the editor, caret at the end of the section: a
+  // typed character lands right after `time.sleep(1)` (then is removed again).
+  const editorFocused = await page.evaluate(() => {
+    const host = document.activeElement
+    return host?.tagName === 'DIFFS-CONTAINER' && host.shadowRoot?.activeElement?.getAttribute('contenteditable') === 'true'
+  })
+  check('after Enter the editor has focus again', editorFocused)
+  await page.keyboard.type('Z')
+  await page.waitForTimeout(300)
+  const typedLine = await page.evaluate(() => {
+    for (const host of document.querySelectorAll('diffs-container')) for (const line of host.shadowRoot?.querySelectorAll('[data-line]') ?? []) {
+      if ((line.textContent ?? '').includes('time.sleep(1)')) return line.textContent
+    }
+    return ''
+  })
+  check('the caret is at the end of the commented text', typedLine.trimEnd().endsWith('time.sleep(1)Z'), JSON.stringify(typedLine))
+  await page.keyboard.press('Backspace')
+  await page.waitForTimeout(300)
   const ret = await rectOf('return None', 'return')
   await page.mouse.click(ret.x + 2, ret.y + ret.h / 2)
   await page.waitForTimeout(300)
@@ -190,7 +244,7 @@ try {
   check('line 11 on disk is the commented code', diskLines[10]?.includes('for attempt in range(3):'))
   check('the note is gone after the save', !(await note.isVisible().catch(() => false)))
   await shot('submitted')
-  check('no chips are left after the comments are sent', (await chips.count()) === 0)
+  check('no marks are left after the comments are sent', (await markedLines()).length === 0, JSON.stringify(await markedLines()))
 
   // 8: the cases the review raised, on a fresh load.
   await page.goto(`http://127.0.0.1:${PORT}/capture/code-editor-comments.html?theme=dark`, { waitUntil: 'networkidle', timeout: 180000 })
@@ -219,7 +273,7 @@ try {
   list = await drafts()
   const diskNow = (await page.evaluate(() => window.__disk)).split('\n')
   check('after an agent edit on disk, the comment is found again by its text', list[0]?.line === 14 && list[0]?.endLine === 16 && diskNow[13]?.includes('except Exception'), JSON.stringify(list[0] && [list[0].line, list[0].endLine]))
-  check('its chip follows it', (await chips.count()) === 1)
+  check('its mark follows it', JSON.stringify(await markedLines()) === '[14,15,16]', JSON.stringify(await markedLines()))
   // 8c: unsaved edits plus a newer file on disk: Submit All refuses to write over it.
   const sentBefore = await page.evaluate(() => window.__sent.length)
   const firstLine = await rectOf('# added by the agent', '#')
@@ -241,6 +295,46 @@ try {
   const keptText = await page.locator('textarea').evaluateAll(els => els.map(e => e.value))
   check('the comment and the typed instruction are kept', keptDrafts === 1 && keptText.includes('Keep it short.'), JSON.stringify({ keptDrafts, keptText }))
   await shot('conflict')
+
+  // 9: a section that overlaps a pending comment edits it. The box opens with
+  // that comment's text; Escape leaves it as it was, and a submit moves it to
+  // the new section with the new text.
+  await page.goto(`http://127.0.0.1:${PORT}/capture/code-editor-comments.html?theme=dark`, { waitUntil: 'networkidle', timeout: 180000 })
+  await page.locator('[data-column-number="12"]').first().waitFor({ timeout: 60000 })
+  await page.waitForTimeout(800)
+  await drag(await rectOf('except Exception', 'except'), await rectOf('except Exception', 'Exception:'))
+  await page.keyboard.press('Control+l')
+  await composer.waitFor({ state: 'visible', timeout: 5000 })
+  await composer.pressSequentially('Catch a narrower exception.', { delay: 5 })
+  await composer.press('Enter')
+  await composer.waitFor({ state: 'detached', timeout: 5000 })
+  await page.waitForTimeout(400)
+  // Overlap the comment's tail ('Exception:') and run on into the next line.
+  const overlap = async () => {
+    await drag(await rectOf('except Exception', 'Exception'), await rectOf('            pass', 'pass'))
+    await page.keyboard.press('Control+l')
+    await composer.waitFor({ state: 'visible', timeout: 5000 })
+    await page.waitForTimeout(300)
+    return composer.inputValue()
+  }
+  check('an overlapping section opens with the existing comment', (await overlap()) === 'Catch a narrower exception.', await composer.inputValue().catch(() => ''))
+  await composer.press('Escape')
+  await composer.waitFor({ state: 'detached', timeout: 5000 })
+  await page.waitForTimeout(300)
+  list = await drafts()
+  check('Escape leaves the existing comment as it was', list.length === 1 && list[0]?.anchor === 'except Exception:' && list[0]?.text === 'Catch a narrower exception.', JSON.stringify(list.map(c => ({ anchor: c.anchor, text: c.text }))))
+  await overlap()
+  await composer.press('End')
+  await composer.pressSequentially(' And log it.', { delay: 5 })
+  await composer.press('Enter')
+  await composer.waitFor({ state: 'detached', timeout: 5000 })
+  await page.waitForTimeout(400)
+  list = await drafts()
+  check('submitting replaces it: one comment, on the new section, with the edited text',
+    list.length === 1 && list[0]?.anchor === 'Exception:\n            pass' && list[0]?.line === 12 && list[0]?.endLine === 13 && list[0]?.text === 'Catch a narrower exception. And log it.',
+    JSON.stringify(list.map(c => ({ line: c.line, endLine: c.endLine, anchor: c.anchor, text: c.text }))))
+  check('its mark covers the new section', JSON.stringify(await markedLines()) === '[12,13]', JSON.stringify(await markedLines()))
+  await shot('overlap-replaced')
 
   // Paste with the clipboard read refused: a visible note names the keyboard paste.
   await page.goto(`http://127.0.0.1:${PORT}/capture/code-editor-comments.html?theme=dark`, { waitUntil: 'networkidle', timeout: 180000 })
